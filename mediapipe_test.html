@@ -4,15 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Mediapipe Pose Tracking</title>
-    <!-- Mediapipe CDN 경로 -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
     <style>
       #container {
         display: flex;
+        align-items: flex-start;
       }
-      canvas {
+      #output_canvas {
         margin: 10px;
       }
     </style>
@@ -21,10 +21,15 @@
     <h1>Mediapipe Pose Tracking</h1>
     <div id="container">
       <video class="input_video" style="display: none"></video>
-      <canvas id="output_canvas" width="640px" height="720px"></canvas>
-      <canvas id="answer_canvas" width="640px" height="720px"></canvas>
+      <canvas id="output_canvas" width="932" height="642"></canvas>
+      <canvas id="answer_canvas" width="932" height="642"></canvas>
     </div>
-    <p id="similarityScore" style="font-size: 24px; color: green">유사도: 0%</p>
+    <p id="similarityScoreDistance" style="font-size: 24px; color: green">
+      거리 기반 유사도: 0%
+    </p>
+    <p id="similarityScoreAngle" style="font-size: 24px; color: blue">
+      각도 기반 유사도: 0%
+    </p>
 
     <script>
       const videoElement = document.querySelector(".input_video");
@@ -34,9 +39,15 @@
       const answerCanvas = document.getElementById("answer_canvas");
       const answerCtx = answerCanvas.getContext("2d");
 
-      const similarityScoreElement = document.getElementById("similarityScore");
+      const similarityScoreDistanceElement = document.getElementById(
+        "similarityScoreDistance"
+      );
+      const similarityScoreAngleElement = document.getElementById(
+        "similarityScoreAngle"
+      );
 
       let answerPoseLandmarks = null; // 정답 포즈 랜드마크
+      let answerVisibleLandmarks = null; // 정답 포즈에서 드러나는 랜드마크
       let answerImage = new Image(); // 정답 이미지 객체
       const answerImagePath = "sonny.png"; // 정답 이미지 경로
       answerImage.src = answerImagePath; // 정답 이미지 로드
@@ -48,7 +59,7 @@
       });
 
       pose.setOptions({
-        modelComplexity: 1,
+        modelComplexity: 2,
         smoothLandmarks: true,
         enableSegmentation: true,
         smoothSegmentation: true,
@@ -56,9 +67,18 @@
         minTrackingConfidence: 0.5,
       });
 
-      // 정답 이미지에서 랜드마크 추출 함수
+      function getVisibleLandmarks(landmarks) {
+        // 모든 랜드마크를 반환 (visibility 기준 제거)
+        return landmarks.filter((landmark) => landmark);
+      }
+
       async function loadAnswerPose() {
         await new Promise((resolve) => (answerImage.onload = resolve));
+
+        answerCanvas.width = answerImage.width;
+        answerCanvas.height = answerImage.height;
+        answerCanvas.style.width = `${answerImage.width}px`;
+        answerCanvas.style.height = `${answerImage.height}px`;
 
         const offscreenCanvas = document.createElement("canvas");
         offscreenCanvas.width = answerImage.width;
@@ -76,61 +96,165 @@
           pose.onResults((results) => {
             if (results.poseLandmarks) {
               answerPoseLandmarks = results.poseLandmarks;
-              console.log("정답 포즈 랜드마크 추출 완료:", answerPoseLandmarks);
-              // 정답 이미지를 answerCanvas에 표시
-              answerCtx.drawImage(
-                answerImage,
+              answerVisibleLandmarks = getVisibleLandmarks(answerPoseLandmarks); // 정답 이미지에서 드러나는 랜드마크 저장
+              answerCtx.clearRect(
                 0,
                 0,
                 answerCanvas.width,
                 answerCanvas.height
               );
-              resolve(true); // 성공
+              answerCtx.drawImage(answerImage, 0, 0);
+              resolve(true);
             } else {
-              console.log("정답 포즈를 감지할 수 없습니다.");
-              resolve(false); // 실패
+              resolve(false);
             }
           });
 
           pose.send({ image: offscreenCanvas }).catch((error) => {
-            console.error("이미지 처리 중 오류 발생:", error);
             reject(error);
           });
         });
       }
 
-      // 유사도 계산 함수
-      function calculateSimilarity(poseLandmarks1, poseLandmarks2) {
-        if (!poseLandmarks1 || !poseLandmarks2) {
-          console.log("유사도 계산 실패: 포즈 랜드마크가 설정되지 않음");
+      // 벡터 간의 각도를 계산하는 함수
+      function calculateAngle(firstLandmark, midLandmark, lastLandmark) {
+        if (!firstLandmark || !midLandmark || !lastLandmark) return null;
+
+        const radians =
+          Math.atan2(
+            lastLandmark.y - midLandmark.y,
+            lastLandmark.x - midLandmark.x
+          ) -
+          Math.atan2(
+            firstLandmark.y - midLandmark.y,
+            firstLandmark.x - midLandmark.x
+          );
+
+        let degrees = Math.abs(radians * (180.0 / Math.PI)); // 각도를 절대값으로 변환
+        if (degrees > 180.0) {
+          degrees = 360.0 - degrees; // 예각으로 변환
+        }
+        return degrees;
+      }
+
+      // 공통으로 감지된 랜드마크만을 사용하여 각도 계산
+      function getPoseAngles(landmarks) {
+        if (!landmarks) return null;
+
+        const angles = {
+          leftShoulder: calculateAngle(
+            landmarks[11],
+            landmarks[13],
+            landmarks[15]
+          ),
+          rightShoulder: calculateAngle(
+            landmarks[12],
+            landmarks[14],
+            landmarks[16]
+          ),
+          leftElbow: calculateAngle(
+            landmarks[11],
+            landmarks[13],
+            landmarks[23]
+          ),
+          rightElbow: calculateAngle(
+            landmarks[12],
+            landmarks[14],
+            landmarks[24]
+          ),
+          frontLegHip: calculateAngle(
+            landmarks[23],
+            landmarks[25],
+            landmarks[27]
+          ),
+          backKnee: calculateAngle(landmarks[24], landmarks[26], landmarks[28]),
+          waist: calculateAngle(landmarks[11], landmarks[23], landmarks[25]),
+        };
+
+        // null 값을 가진 각도를 제외하고 반환
+        const validAngles = {};
+        for (const key in angles) {
+          if (angles[key] !== null) {
+            validAngles[key] = angles[key];
+          }
+        }
+
+        console.log("Calculated Angles:", validAngles); // 디버깅용 로그
+        return validAngles;
+      }
+
+      // 거리 기반 유사도 계산
+      function calculateDistanceSimilarity(poseLandmarks1, poseLandmarks2) {
+        if (!poseLandmarks1 || !poseLandmarks2) return null;
+
+        let totalDifference = 0;
+        let count = 0;
+
+        answerVisibleLandmarks.forEach((landmark1, index) => {
+          const landmark2 = poseLandmarks2[index];
+          if (landmark1 && landmark2) {
+            const dx = landmark1.x - landmark2.x;
+            const dy = landmark1.y - landmark2.y;
+            totalDifference += Math.sqrt(dx * dx + dy * dy);
+            count++;
+          }
+        });
+
+        if (count === 0) return null;
+
+        return 1 / (1 + totalDifference / count);
+      }
+
+      // 각도 기반 유사도 계산 (공통으로 감지된 각도들만 사용)
+      function calculateAngleSimilarity(
+        answerAngles,
+        currentAngles,
+        tolerance = 10
+      ) {
+        if (!answerAngles || !currentAngles) return null;
+
+        let totalDifference = 0;
+        let count = 0;
+
+        for (const key in answerAngles) {
+          if (answerAngles[key] !== null && currentAngles[key] !== null) {
+            const difference = Math.abs(answerAngles[key] - currentAngles[key]);
+            console.log(`Angle difference for ${key}: ${difference}`); // 각도 차이 디버깅
+            if (difference <= tolerance) {
+              // 허용 오차 내의 차이만 비교
+              totalDifference += difference;
+              count++;
+            }
+          } else {
+            console.log(
+              `Skipping ${key} due to null values in either answer or current pose`
+            ); // null인 각도를 건너뛰는 경우 로깅
+          }
+        }
+
+        if (count === 0) {
+          console.log("No comparable angles found."); // 비교할 각도가 없는 경우
           return null;
         }
 
-        let totalDifference = 0;
-        for (let i = 0; i < poseLandmarks1.length; i++) {
-          const dx = poseLandmarks1[i].x - poseLandmarks2[i].x;
-          const dy = poseLandmarks1[i].y - poseLandmarks2[i].y;
-          totalDifference += Math.sqrt(dx * dx + dy * dy);
-        }
-
-        const similarityScore = 1 / (1 + totalDifference);
+        const similarityScore = 1 / (1 + totalDifference / count);
+        console.log(`Angle Similarity Score: ${similarityScore}`);
         return similarityScore;
       }
 
-      // 비디오 입력 설정
       const camera = new Camera(videoElement, {
         onFrame: async () => {
           await pose.send({ image: videoElement });
         },
-        width: 640,
-        height: 720,
       });
       camera.start();
 
-      // 실시간 포즈 인식 결과 처리
       function onResults(results) {
-        // 실시간 영상 출력
         outputCtx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
+        outputCtx.save();
+        outputCtx.scale(-1, 1);
+        outputCtx.translate(-outputCanvas.width, 0);
+
         outputCtx.drawImage(
           results.image,
           0,
@@ -139,7 +263,6 @@
           outputCanvas.height
         );
 
-        // 포즈 랜드마크 그리기
         if (results.poseLandmarks) {
           drawConnectors(
             outputCtx,
@@ -152,26 +275,35 @@
             lineWidth: 2,
           });
 
-          // 정답 포즈가 설정되었는지 확인 후 유사도 계산
-          if (answerPoseLandmarks) {
-            const similarity = calculateSimilarity(
-              answerPoseLandmarks,
+          if (answerVisibleLandmarks) {
+            const distanceSimilarity = calculateDistanceSimilarity(
+              answerVisibleLandmarks,
               results.poseLandmarks
             );
-            if (similarity !== null) {
-              const similarityPercentage = (similarity * 100).toFixed(2) + "%";
-              similarityScoreElement.innerText = `유사도: ${similarityPercentage}`;
-              console.log("포즈 유사도:", similarityPercentage);
+            if (distanceSimilarity !== null) {
+              similarityScoreDistanceElement.innerText = `거리 기반 유사도: ${(
+                distanceSimilarity * 100
+              ).toFixed(2)}%`;
             }
-          } else {
-            console.log("정답 포즈 랜드마크가 아직 설정되지 않았습니다.");
+
+            // 각도 기반 유사도 계산 및 표시
+            const answerAngles = getPoseAngles(answerVisibleLandmarks);
+            const currentAngles = getPoseAngles(results.poseLandmarks);
+            const angleSimilarity = calculateAngleSimilarity(
+              answerAngles,
+              currentAngles,
+              10
+            ); // 10도 허용 오차
+            if (angleSimilarity !== null) {
+              similarityScoreAngleElement.innerText = `각도 기반 유사도: ${(
+                angleSimilarity * 100
+              ).toFixed(2)}%`;
+            }
           }
-        } else {
-          console.log("실시간 포즈를 감지하지 못했습니다.");
         }
+        outputCtx.restore();
       }
 
-      // 정답 이미지에서 포즈 로드 및 카메라 시작
       loadAnswerPose()
         .then((success) => {
           if (success) {
