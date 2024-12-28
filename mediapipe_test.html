@@ -51,10 +51,18 @@
       const combinedSimilarityElement =
         document.getElementById("combinedSimilarity");
 
+      function getVisibleLandmarks(landmarks) {
+        if (!landmarks) return [];
+        return landmarks.filter(
+          (landmark) => landmark.visibility && landmark.visibility > 0.5
+        );
+      }
+
       let answerPoseLandmarks = null;
       let answerVisibleLandmarks = null;
+      let answerAngles = null;
       let answerImage = new Image();
-      const answerImagePath = "sonny.png";
+      const answerImagePath = "./assets/sonny.png";
       answerImage.src = answerImagePath;
 
       const pose = new Pose({
@@ -71,65 +79,116 @@
         minTrackingConfidence: 0.5,
       });
 
-      function getVisibleLandmarks(landmarks) {
-        return landmarks.filter((landmark) => landmark);
+      function splitLandmarks(landmarks) {
+        if (!landmarks) return { main: [], face: [], handsFeet: [] };
+
+        const main = [];
+        const face = [];
+        const handsFeet = [];
+
+        landmarks.forEach((landmark, index) => {
+          if (index >= 0 && index <= 10) {
+            face.push(landmark);
+          } else if (
+            (index >= 15 && index <= 20) ||
+            (index >= 21 && index <= 32)
+          ) {
+            handsFeet.push(landmark);
+          } else {
+            main.push(landmark);
+          }
+        });
+
+        return { main, face, handsFeet };
       }
 
-      async function loadAnswerPose() {
-        await new Promise((resolve) => (answerImage.onload = resolve));
+      function calculateDistanceSimilarity(landmarks1, landmarks2) {
+        if (!landmarks1 || !landmarks2) return null;
 
-        answerCanvas.width = answerImage.width;
-        answerCanvas.height = answerImage.height;
-        answerCanvas.style.width = `1050px`;
-        answerCanvas.style.height = `720px`;
+        const {
+          main: main1,
+          face: face1,
+          handsFeet: handsFeet1,
+        } = splitLandmarks(landmarks1);
+        const {
+          main: main2,
+          face: face2,
+          handsFeet: handsFeet2,
+        } = splitLandmarks(landmarks2);
 
-        const offscreenCanvas = document.createElement("canvas");
-        offscreenCanvas.width = answerImage.width;
-        offscreenCanvas.height = answerImage.height;
-        const offscreenCtx = offscreenCanvas.getContext("2d");
-        offscreenCtx.drawImage(
-          answerImage,
-          0,
-          0,
-          answerImage.width,
-          answerImage.height
-        );
+        let totalDifference = 0;
+        let count = 0;
 
-        return new Promise((resolve, reject) => {
-          pose.onResults((results) => {
-            if (results.poseLandmarks) {
-              answerPoseLandmarks = results.poseLandmarks;
-              answerVisibleLandmarks = getVisibleLandmarks(answerPoseLandmarks);
-              answerCtx.clearRect(
-                0,
-                0,
-                answerCanvas.width,
-                answerCanvas.height
-              );
-              answerCtx.drawImage(answerImage, 0, 0);
-
-              // 정답 포즈 랜드마크를 answerCanvas에 그리기
-              drawConnectors(
-                answerCtx,
-                answerPoseLandmarks,
-                Pose.POSE_CONNECTIONS,
-                { color: "#00FF00", lineWidth: 4 }
-              );
-              drawLandmarks(answerCtx, answerPoseLandmarks, {
-                color: "#FF0000",
-                lineWidth: 2,
-              });
-
-              resolve(true);
-            } else {
-              resolve(false);
-            }
-          });
-
-          pose.send({ image: offscreenCanvas }).catch((error) => {
-            reject(error);
-          });
+        // 주요 관절 유사도 (가중치 1.0)
+        main1.forEach((landmark, index) => {
+          if (landmark && main2[index]) {
+            const dx = landmark.x - main2[index].x;
+            const dy = landmark.y - main2[index].y;
+            totalDifference += Math.sqrt(dx * dx + dy * dy) * 1.0;
+            count++;
+          }
         });
+
+        // 얼굴 유사도 (가중치 0.2)
+        face1.forEach((landmark, index) => {
+          if (landmark && face2[index]) {
+            const dx = landmark.x - face2[index].x;
+            const dy = landmark.y - face2[index].y;
+            totalDifference += Math.sqrt(dx * dx + dy * dy) * 0.2;
+            count++;
+          }
+        });
+
+        // 손가락/발끝 유사도 (가중치 0.2)
+        handsFeet1.forEach((landmark, index) => {
+          if (landmark && handsFeet2[index]) {
+            const dx = landmark.x - handsFeet2[index].x;
+            const dy = landmark.y - handsFeet2[index].y;
+            totalDifference += Math.sqrt(dx * dx + dy * dy) * 0.2;
+            count++;
+          }
+        });
+
+        if (count === 0) return null;
+
+        return 1 / (1 + totalDifference / count);
+      }
+
+      function calculateAngleSimilarity(
+        answerAngles,
+        currentAngles,
+        tolerance = 15
+      ) {
+        if (!answerAngles || !currentAngles) return null;
+
+        let totalDifference = 0;
+        let count = 0;
+
+        for (const key in answerAngles) {
+          if (answerAngles[key] !== null && currentAngles[key] !== null) {
+            const difference = Math.abs(answerAngles[key] - currentAngles[key]);
+            if (difference <= tolerance) {
+              totalDifference += difference;
+              count++;
+            }
+          }
+        }
+
+        if (count === 0) return null;
+
+        return 1 / (1 + totalDifference / count);
+      }
+
+      function calculateCombinedSimilarity(
+        distanceSimilarity,
+        angleSimilarity,
+        w1 = 0.8,
+        w2 = 0.2
+      ) {
+        if (distanceSimilarity === null || angleSimilarity === null)
+          return null;
+
+        return w1 * distanceSimilarity + w2 * angleSimilarity;
       }
 
       function calculateAngle(firstLandmark, midLandmark, lastLandmark) {
@@ -183,6 +242,9 @@
           ),
           backKnee: calculateAngle(landmarks[24], landmarks[26], landmarks[28]),
           waist: calculateAngle(landmarks[11], landmarks[23], landmarks[25]),
+          face: calculateAngle(landmarks[0], landmarks[1], landmarks[2]), // 얼굴 각도
+          finger: calculateAngle(landmarks[15], landmarks[17], landmarks[19]), // 손가락 각도
+          toe: calculateAngle(landmarks[27], landmarks[31], landmarks[32]), // 발끝 각도
         };
 
         const validAngles = {};
@@ -194,62 +256,62 @@
         return validAngles;
       }
 
-      function calculateDistanceSimilarity(poseLandmarks1, poseLandmarks2) {
-        if (!poseLandmarks1 || !poseLandmarks2) return null;
+      async function loadAnswerPose() {
+        await new Promise((resolve) => (answerImage.onload = resolve));
 
-        let totalDifference = 0;
-        let count = 0;
+        answerCanvas.width = answerImage.width;
+        answerCanvas.height = answerImage.height;
+        answerCanvas.style.width = `1050px`;
+        answerCanvas.style.height = `720px`;
 
-        answerVisibleLandmarks.forEach((landmark1, index) => {
-          const landmark2 = poseLandmarks2[index];
-          if (landmark1 && landmark2) {
-            const dx = landmark1.x - landmark2.x;
-            const dy = landmark1.y - landmark2.y;
-            totalDifference += Math.sqrt(dx * dx + dy * dy);
-            count++;
-          }
-        });
+        const offscreenCanvas = document.createElement("canvas");
+        offscreenCanvas.width = answerImage.width;
+        offscreenCanvas.height = answerImage.height;
+        const offscreenCtx = offscreenCanvas.getContext("2d");
+        offscreenCtx.drawImage(
+          answerImage,
+          0,
+          0,
+          answerImage.width,
+          answerImage.height
+        );
 
-        if (count === 0) return null;
+        return new Promise((resolve, reject) => {
+          pose.onResults((results) => {
+            if (results.poseLandmarks) {
+              answerPoseLandmarks = results.poseLandmarks;
+              answerVisibleLandmarks = getVisibleLandmarks(answerPoseLandmarks);
+              answerAngles = getPoseAngles(answerPoseLandmarks);
 
-        return 1 / (1 + totalDifference / count);
-      }
+              answerCtx.clearRect(
+                0,
+                0,
+                answerCanvas.width,
+                answerCanvas.height
+              );
+              answerCtx.drawImage(answerImage, 0, 0);
 
-      function calculateAngleSimilarity(
-        answerAngles,
-        currentAngles,
-        tolerance = 15
-      ) {
-        if (!answerAngles || !currentAngles) return null;
+              drawConnectors(
+                answerCtx,
+                answerPoseLandmarks,
+                Pose.POSE_CONNECTIONS,
+                { color: "#00FF00", lineWidth: 4 }
+              );
+              drawLandmarks(answerCtx, answerPoseLandmarks, {
+                color: "#FF0000",
+                lineWidth: 2,
+              });
 
-        let totalDifference = 0;
-        let count = 0;
-
-        for (const key in answerAngles) {
-          if (answerAngles[key] !== null && currentAngles[key] !== null) {
-            const difference = Math.abs(answerAngles[key] - currentAngles[key]);
-            if (difference <= tolerance) {
-              totalDifference += difference;
-              count++;
+              resolve(true);
+            } else {
+              resolve(false);
             }
-          }
-        }
+          });
 
-        if (count === 0) return null;
-
-        return 1 / (1 + totalDifference / count);
-      }
-
-      function calculateCombinedSimilarity(
-        distanceSimilarity,
-        angleSimilarity,
-        w1 = 0.8,
-        w2 = 0.2
-      ) {
-        if (distanceSimilarity === null || angleSimilarity === null)
-          return null;
-
-        return w1 * distanceSimilarity + w2 * angleSimilarity;
+          pose.send({ image: offscreenCanvas }).catch((error) => {
+            reject(error);
+          });
+        });
       }
 
       const camera = new Camera(videoElement, {
@@ -287,7 +349,7 @@
 
           if (answerVisibleLandmarks) {
             const distanceSimilarity = calculateDistanceSimilarity(
-              answerVisibleLandmarks,
+              answerPoseLandmarks,
               results.poseLandmarks
             );
             if (distanceSimilarity !== null) {
@@ -296,12 +358,10 @@
               ).toFixed(2)}%`;
             }
 
-            const answerAngles = getPoseAngles(answerVisibleLandmarks);
-            const currentAngles = getPoseAngles(results.poseLandmarks);
+            const userAngles = getPoseAngles(results.poseLandmarks);
             const angleSimilarity = calculateAngleSimilarity(
               answerAngles,
-              currentAngles,
-              18
+              userAngles
             );
             if (angleSimilarity !== null) {
               similarityScoreAngleElement.innerText = `각도 기반 유사도: ${(
@@ -311,9 +371,7 @@
 
             const combinedSimilarity = calculateCombinedSimilarity(
               distanceSimilarity,
-              angleSimilarity,
-              0.5,
-              0.5
+              angleSimilarity
             );
             if (combinedSimilarity !== null) {
               combinedSimilarityElement.innerText = `최종 유사도: ${(

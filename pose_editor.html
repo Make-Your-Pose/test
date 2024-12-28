@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pose Editor</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 20px;
+      }
+
+      .editor-container {
+        display: flex;
+        align-items: flex-start;
+        justify-content: flex-start;
+        gap: 20px;
+      }
+
+      canvas {
+        border: 1px solid #ccc;
+        max-width: 800px;
+        max-height: 600px;
+        object-fit: contain;
+      }
+
+      .landmark-info {
+        max-height: 600px;
+        overflow-y: auto;
+      }
+
+      ul {
+        list-style: none;
+        padding: 0;
+      }
+
+      li {
+        margin-bottom: 5px;
+      }
+
+      .landmark-visible {
+        color: green;
+      }
+
+      .landmark-missing {
+        color: red;
+      }
+
+      .controls {
+        margin-top: 10px;
+      }
+
+      button,
+      input[type="file"] {
+        margin-right: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Pose Editor</h1>
+    <div class="editor-container">
+      <canvas id="editorCanvas" width="800" height="600"></canvas>
+      <div class="landmark-info">
+        <h3>Landmark Information</h3>
+        <ul id="landmarkList"></ul>
+      </div>
+    </div>
+    <div class="controls">
+      <input type="file" id="imageLoader" accept="image/*" />
+      <button id="saveLandmarks">Save Landmarks</button>
+      <button id="resetLandmarks">Reset</button>
+    </div>
+
+    <script>
+      const canvas = document.getElementById("editorCanvas");
+      const ctx = canvas.getContext("2d");
+      const imageLoader = document.getElementById("imageLoader");
+      const landmarkList = document.getElementById("landmarkList");
+
+      let image = new Image();
+      let landmarks = [];
+      let dragIndex = null;
+      let isDragging = false;
+
+      const POSE_LANDMARKS = [
+        "Nose",
+        "Left Eye Inner",
+        "Left Eye",
+        "Left Eye Outer",
+        "Right Eye Inner",
+        "Right Eye",
+        "Right Eye Outer",
+        "Left Ear",
+        "Right Ear",
+        "Mouth Left",
+        "Mouth Right",
+        "Left Shoulder",
+        "Right Shoulder",
+        "Left Elbow",
+        "Right Elbow",
+        "Left Wrist",
+        "Right Wrist",
+        "Left Pinky",
+        "Right Pinky",
+        "Left Index",
+        "Right Index",
+        "Left Thumb",
+        "Right Thumb",
+        "Left Hip",
+        "Right Hip",
+        "Left Knee",
+        "Right Knee",
+        "Left Ankle",
+        "Right Ankle",
+        "Left Heel",
+        "Right Heel",
+        "Left Foot Index",
+        "Right Foot Index",
+      ];
+
+      const pose = new Pose({
+        locateFile: (file) =>
+          `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
+      });
+
+      pose.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+
+      pose.onResults((results) => {
+        if (results.poseLandmarks) {
+          landmarks = results.poseLandmarks.map((lm, index) => ({
+            x: lm.x,
+            y: lm.y,
+            name: POSE_LANDMARKS[index],
+            visibility: lm.visibility,
+          }));
+          updateLandmarkList();
+          redrawCanvas();
+        }
+      });
+
+      imageLoader.addEventListener("change", (event) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          image.src = e.target.result;
+        };
+        reader.readAsDataURL(event.target.files[0]);
+      });
+
+      image.onload = async () => {
+        redrawCanvas();
+        await pose.send({ image: createScaledCanvas() });
+      };
+
+      function createScaledCanvas() {
+        const offscreenCanvas = document.createElement("canvas");
+        offscreenCanvas.width = image.width;
+        offscreenCanvas.height = image.height;
+
+        const offscreenCtx = offscreenCanvas.getContext("2d");
+        offscreenCtx.drawImage(image, 0, 0);
+        return offscreenCanvas;
+      }
+
+      function redrawCanvas() {
+        const aspectRatio = image.width / image.height;
+        let renderWidth = canvas.width;
+        let renderHeight = canvas.width / aspectRatio;
+
+        if (renderHeight > canvas.height) {
+          renderHeight = canvas.height;
+          renderWidth = canvas.height * aspectRatio;
+        }
+
+        const xOffset = (canvas.width - renderWidth) / 2;
+        const yOffset = (canvas.height - renderHeight) / 2;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(image, xOffset, yOffset, renderWidth, renderHeight);
+
+        landmarks.forEach(({ x, y }, index) => {
+          const scaledX = x * renderWidth + xOffset;
+          const scaledY = y * renderHeight + yOffset;
+
+          ctx.beginPath();
+          ctx.arc(scaledX, scaledY, 5, 0, Math.PI * 2);
+          ctx.fillStyle = "lightgreen";
+          ctx.fill();
+
+          ctx.fillStyle = "black";
+          ctx.font = "12px Arial";
+          ctx.fillText(index, scaledX + 8, scaledY - 8);
+        });
+      }
+
+      function updateLandmarkList() {
+        landmarkList.innerHTML = "";
+        landmarks.forEach(({ name, visibility }, index) => {
+          const li = document.createElement("li");
+          if (visibility > 0.5) {
+            li.textContent = `${index}: ${name}`;
+            li.classList.add("landmark-visible");
+          } else {
+            li.textContent = `${index}: ${name} (Missing)`;
+            li.classList.add("landmark-missing");
+          }
+          landmarkList.appendChild(li);
+        });
+      }
+
+      canvas.addEventListener("mousedown", (event) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
+        const y = ((event.clientY - rect.top) / rect.height) * canvas.height;
+
+        dragIndex = landmarks.findIndex(
+          (lm) =>
+            Math.hypot(lm.x * canvas.width - x, lm.y * canvas.height - y) < 10
+        );
+
+        if (dragIndex >= 0) isDragging = true;
+      });
+
+      canvas.addEventListener("mousemove", (event) => {
+        if (isDragging && dragIndex !== null) {
+          const rect = canvas.getBoundingClientRect();
+          const x = (event.clientX - rect.left) / rect.width;
+          const y = (event.clientY - rect.top) / rect.height;
+
+          landmarks[dragIndex].x = x;
+          landmarks[dragIndex].y = y;
+          redrawCanvas();
+        }
+      });
+
+      canvas.addEventListener("mouseup", () => {
+        isDragging = false;
+        dragIndex = null;
+      });
+
+      canvas.addEventListener("mouseleave", () => {
+        isDragging = false;
+        dragIndex = null;
+      });
+
+      document.getElementById("saveLandmarks").addEventListener("click", () => {
+        const blob = new Blob([JSON.stringify(landmarks, null, 2)], {
+          type: "application/json",
+        });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = "landmarks.json";
+        link.click();
+      });
+
+      document
+        .getElementById("resetLandmarks")
+        .addEventListener("click", () => {
+          landmarks = [];
+          redrawCanvas();
+        });
+    </script>
+  </body>
+</html>
